@@ -71,6 +71,63 @@ def test_info_versioned(gcs_versioned):
     assert gcs_versioned.info(f"{a}?generation={v2}")["generation"] == v2
 
 
+@pytest.mark.parametrize("version_aware", [False, True])
+@pytest.mark.parametrize("cache_state", ["cold", "latest", "deleted"])
+def test_info_generation_keyword(gcs_versioned, version_aware, cache_state):
+    path = TEST_VERSIONED_BUCKET + "/explicit-generation"
+    old = b"older-version-is-longer"
+    gcs_versioned.pipe_file(path, old)
+    generation = gcs_versioned.info(path)["generation"]
+    gcs_versioned.pipe_file(path, b"new")
+    if cache_state == "deleted":
+        gcs_versioned.rm_file(path)
+    if cache_state != "cold":
+        gcs_versioned.ls(TEST_VERSIONED_BUCKET, refresh=True)
+    if cache_state == "deleted":
+        with pytest.raises(FileNotFoundError):
+            gcs_versioned.info(path)
+    else:
+        assert gcs_versioned.info(path)["size"] == 3
+
+    gcs_versioned.version_aware = version_aware
+    details = gcs_versioned.info(path, generation=generation)
+    assert details["generation"] == generation
+    assert details["size"] == len(old)
+    assert details["type"] == "file"
+    if version_aware:
+        assert gcs_versioned.info(f"{path}#{generation}") == details
+        assert (
+            gcs_versioned.info(f"{path}#{generation}", generation=generation) == details
+        )
+
+
+@pytest.mark.parametrize("version_aware", [False, True])
+@pytest.mark.parametrize("cache_state", ["cold", "latest", "deleted"])
+def test_info_missing_generation(gcs_versioned, version_aware, cache_state):
+    path = TEST_VERSIONED_BUCKET + "/missing-generation"
+    gcs_versioned.pipe_file(path, b"data")
+    generation = gcs_versioned.info(path)["generation"]
+    missing = str(int(generation) - 1)
+    if cache_state == "deleted":
+        gcs_versioned.rm_file(path)
+    if cache_state != "cold":
+        gcs_versioned.ls(TEST_VERSIONED_BUCKET, refresh=True)
+    gcs_versioned.version_aware = version_aware
+    with pytest.raises(FileNotFoundError):
+        gcs_versioned.info(path, generation=missing)
+    if version_aware:
+        with pytest.raises(FileNotFoundError):
+            gcs_versioned.info(f"{path}#{missing}")
+
+
+def test_info_conflicting_generation(gcs_versioned):
+    path = TEST_VERSIONED_BUCKET + "/conflicting-generation"
+    gcs_versioned.pipe_file(path, b"data")
+    generation = gcs_versioned.info(path)["generation"]
+    with pytest.raises(ValueError, match="Cannot coalesce generations"):
+        gcs_versioned.info(f"{path}#{generation}", generation="1")
+
+
 def test_cat_versioned(gcs_versioned):
     with gcs_versioned.open(b, "wb") as wo:
         wo.write(b"v1")

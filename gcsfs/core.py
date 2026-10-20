@@ -718,12 +718,13 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
 
     make_bucket_requester_pays = asyn.sync_wrapper(_make_bucket_requester_pays)
 
-    async def _get_object(self, path):
+    async def _get_object(self, path, generation=None):
         """Return object information at the given path."""
-        bucket, key, generation = self.split_path(path)
+        bucket, key, path_generation = self.split_path(path)
+        generation = _coalesce_generation(generation, path_generation)
 
-        # Check if parent dir is in listing cache
-        listing = self._ls_from_cache(path)
+        # A current listing cannot rule out an older object generation.
+        listing = self._ls_from_cache(path) if generation is None else None
         if listing:
             name = "/".join((bucket, key))
             for file_details in listing:
@@ -1224,11 +1225,17 @@ class GCSFileSystem(DirCacheUpdater, asyn.AsyncFileSystem):
                 else:
                     raise FileNotFoundError(path)
             return out
+        bucket, key, path_generation = self.split_path(path)
+        generation = _coalesce_generation(generation, path_generation)
+        if generation is not None:
+            out = await self._get_object(path, generation=generation)
+            if not _is_directory_marker(out):
+                return out
+            return await self._get_directory_info(path, bucket, key, generation)
+
         # Check directory cache for parent dir
         parent_path = self._parent(path)
         parent_cache = self._ls_from_cache(parent_path)
-        bucket, key, path_generation = self.split_path(path)
-        generation = _coalesce_generation(generation, path_generation)
         if parent_cache:
             name = "/".join((bucket, key))
             for o in parent_cache:
